@@ -3,43 +3,79 @@ import pandas as pd
 import numpy as np
 import pickle
 import itertools
+from sklearn.linear_model import LogisticRegression
 
 st.set_page_config(page_title="IPL 2026 Predictor", page_icon="🏏", layout="wide")
-
-@st.cache_resource
-def load_model():
-    with open("model.pkl", "rb") as f:
-        return pickle.load(f)
 
 @st.cache_data
 def load_features():
     return pd.read_csv("team_features.csv")
 
-saved     = load_model()
-model     = saved["model"]
-feat_cols = saved["features"]
-features  = load_features()
-feat_map  = features.set_index("team").to_dict("index")
+@st.cache_resource
+def train_model():
+    matches  = pd.read_csv("all_ipl_matches_data.csv")
+    teams    = pd.read_csv("all_teams_data.csv")
+    features = load_features()
+    team_map = dict(zip(teams["team_id"], teams["team_name"]))
+    matches["team1_name"]  = matches["team1"].map(team_map)
+    matches["team2_name"]  = matches["team2"].map(team_map)
+    matches["winner_name"] = matches["match_winner"].map(team_map)
+    matches["toss_name"]   = matches["toss_winner"].map(team_map)
+    matches = matches[matches["result"] == "win"].copy()
+    active_teams = features["team"].tolist()
+    matches = matches[
+        matches["team1_name"].isin(active_teams) &
+        matches["team2_name"].isin(active_teams)
+    ].copy()
+    feat_map = features.set_index("team").to_dict("index")
+    rows = []
+    for _, row in matches.iterrows():
+        t1 = row["team1_name"]
+        t2 = row["team2_name"]
+        if t1 not in feat_map or t2 not in feat_map:
+            continue
+        f1 = feat_map[t1]
+        f2 = feat_map[t2]
+        rows.append({
+            "win_rate_diff":      f1["win_rate"] - f2["win_rate"],
+            "recent_form_diff":   f1["recent_win_rate"] - f2["recent_win_rate"],
+            "toss_win_rate_diff": f1["toss_win_rate"] - f2["toss_win_rate"],
+            "finals_won_diff":    f1["finals_won"] - f2["finals_won"],
+            "toss_advantage":     1 if row["toss_name"] == t1 else 0,
+            "team1_win_rate":     f1["win_rate"],
+            "team2_win_rate":     f2["win_rate"],
+            "team1_recent":       f1["recent_win_rate"],
+            "team2_recent":       f2["recent_win_rate"],
+            "label": 1 if row["winner_name"] == t1 else 0
+        })
+    df = pd.DataFrame(rows)
+    X = df.drop("label", axis=1)
+    y = df["label"]
+    model = LogisticRegression(max_iter=1000)
+    model.fit(X, y)
+    return model, list(X.columns)
+
+features     = load_features()
+feat_map     = features.set_index("team").to_dict("index")
 active_teams = features["team"].tolist()
+model, feat_cols = train_model()
 
 def predict_match(team1, team2, toss_winner):
     f1 = feat_map[team1]
     f2 = feat_map[team2]
-    toss_advantage = 1 if toss_winner == team1 else 0
     row = {
         "win_rate_diff":      f1["win_rate"] - f2["win_rate"],
         "recent_form_diff":   f1["recent_win_rate"] - f2["recent_win_rate"],
         "toss_win_rate_diff": f1["toss_win_rate"] - f2["toss_win_rate"],
         "finals_won_diff":    f1["finals_won"] - f2["finals_won"],
-        "toss_advantage":     toss_advantage,
+        "toss_advantage":     1 if toss_winner == team1 else 0,
         "team1_win_rate":     f1["win_rate"],
         "team2_win_rate":     f2["win_rate"],
         "team1_recent":       f1["recent_win_rate"],
         "team2_recent":       f2["recent_win_rate"],
     }
     X = pd.DataFrame([row])[feat_cols]
-    prob = model.predict_proba(X)[0][1]
-    return round(prob * 100, 1)
+    return round(model.predict_proba(X)[0][1] * 100, 1)
 
 @st.cache_data
 def simulate_tournament():
@@ -85,13 +121,11 @@ with tab1:
         win_probs = simulate_tournament()
     teams_list = list(win_probs.keys())
     probs_list = list(win_probs.values())
-
     col1, col2 = st.columns(2)
     with col1:
         st.success(f"🥇 **{teams_list[0]}** — {probs_list[0]}%\n\nPredicted IPL 2026 Champion")
     with col2:
         st.warning(f"🥈 **{teams_list[1]}** — {probs_list[1]}%\n\nPredicted Runner Up")
-
     st.markdown("### All Teams Ranking")
     medals = ["🥇","🥈","🥉"] + ["  "]*10
     for i, (team, prob) in enumerate(win_probs.items()):
@@ -112,13 +146,10 @@ with tab2:
         team2 = st.selectbox("🏏 Team 2", [t for t in active_teams if t != team1], index=1)
     with col3:
         toss = st.selectbox("🪙 Toss Winner", [team1, team2])
-
     if st.button("⚡ Predict Winner"):
         prob1 = predict_match(team1, team2, toss)
         prob2 = round(100 - prob1, 1)
         winner = team1 if prob1 > prob2 else team2
-        loser  = team2 if winner == team1 else team1
-        st.markdown("---")
         col1, col2, col3 = st.columns([2,1,2])
         with col1:
             if winner == team1:
@@ -137,4 +168,12 @@ with tab2:
 with tab3:
     st.subheader("📊 Team Statistics (2008–2025)")
     df_display = features.copy()
-    df_display["win_rate"]
+    df_display["win_rate"]        = (df_display["win_rate"] * 100).round(1).astype(str) + "%"
+    df_display["recent_win_rate"] = (df_display["recent_win_rate"] * 100).round(1).astype(str) + "%"
+    df_display["toss_win_rate"]   = (df_display["toss_win_rate"] * 100).round(1).astype(str) + "%"
+    df_display = df_display.rename(columns={
+        "team": "Team", "total_matches": "Matches", "total_wins": "Wins",
+        "win_rate": "Win Rate", "recent_win_rate": "Recent Form",
+        "toss_win_rate": "Toss Win Rate", "finals_won": "Finals Won"
+    })
+    st.dataframe(df_display[["Team","Matches","Wins","Win Rate","Recent Form","Toss Win Rate","Finals Won"]], use_container_width=True, hide_index=True)
