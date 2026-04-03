@@ -8,12 +8,12 @@ st.set_page_config(page_title="IPL 2026 Predictor", page_icon="🏏", layout="wi
 
 @st.cache_resource
 def load_model():
-    with open("data/model.pkl", "rb") as f:
+    with open("model.pkl", "rb") as f:
         return pickle.load(f)
 
 @st.cache_data
 def load_features():
-    return pd.read_csv("data/team_features.csv")
+    return pd.read_csv("team_features.csv")
 
 saved     = load_model()
 model     = saved["model"]
